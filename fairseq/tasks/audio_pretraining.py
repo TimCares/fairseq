@@ -137,7 +137,7 @@ class AudioPretrainingTask(FairseqTask):
             self.datasets[split] = BinarizedAudioDataset(
                 data_path,
                 split=split,
-                sample_rate=task_cfg.get("sample_rate", self.cfg.sample_rate),
+                sample_rate=getattr(task_cfg, "sample_rate", self.cfg.sample_rate),
                 max_sample_size=self.cfg.max_sample_size,
                 min_sample_size=self.cfg.min_sample_size,
                 pad=task_cfg.labels is not None or task_cfg.enable_padding,
@@ -152,7 +152,7 @@ class AudioPretrainingTask(FairseqTask):
 
                 self.datasets[split] = FileAudioDataset(
                     manifest_path=manifest_path,
-                    sample_rate=task_cfg.get("sample_rate", self.cfg.sample_rate),
+                    sample_rate=getattr(task_cfg, "sample_rate", self.cfg.sample_rate),
                     max_sample_size=self.cfg.max_sample_size,
                     min_sample_size=self.cfg.min_sample_size,
                     pad=task_cfg.labels is not None or task_cfg.enable_padding,
@@ -180,7 +180,7 @@ class AudioPretrainingTask(FairseqTask):
                     # TODO: Remove duplication of code from the if block above
                     dataset_map[k] = FileAudioDataset(
                         manifest_path=manifest_path,
-                        sample_rate=task_cfg.get("sample_rate", self.cfg.sample_rate),
+                        sample_rate=getattr(task_cfg, "sample_rate", self.cfg.sample_rate),
                         max_sample_size=self.cfg.max_sample_size,
                         min_sample_size=self.cfg.min_sample_size,
                         pad=task_cfg.labels is not None or task_cfg.enable_padding,
