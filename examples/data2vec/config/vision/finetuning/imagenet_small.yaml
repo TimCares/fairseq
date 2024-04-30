@@ -1,0 +1,53 @@
+# @package _group_
+
+common:
+  fp16: true
+  log_format: json
+  log_interval: 100
+  tensorboard_logdir: tb
+
+checkpoint:
+  save_interval: 1
+  save_interval_updates: 10_000
+  keep_interval_updates: 1
+  no_epoch_checkpoints: true
+  best_checkpoint_metric: accuracy
+
+task:
+  _name: image_classification
+  data: /workspace
+
+dataset:
+  num_workers: 6
+  batch_size: 256
+  skip_invalid_size_inputs_valid_test: true
+  required_batch_size_multiple: 1
+  valid_subset: val
+
+distributed_training:
+  distributed_world_size: 1
+  nprocs_per_node: 1
+  distributed_port: -1
+
+criterion:
+  _name: model
+  log_keys:
+    - correct
+
+optimization:
+  max_update: 50_000
+  lr: [0.0005]
+
+optimizer:
+  _name: adam
+  adam_betas: (0.9,0.98)
+  adam_eps: 1e-06
+  weight_decay: 0.01
+
+lr_scheduler:
+  _name: cosine
+  warmup_updates: 5_000
+
+model:
+  _name: mm_data2vec_image_classification
+  model_path: ???

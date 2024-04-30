@@ -16,10 +16,11 @@ from torchvision import datasets, transforms
 from timm.data import create_transform
 from timm.data.constants import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 import PIL
+import json
 
 from fairseq.data import FairseqDataset
 from .mae_image_dataset import caching_loader
-
+from .imagenet_classes import IMAGENET2012_CLASSES
 
 logger = logging.getLogger(__name__)
 
@@ -89,13 +90,16 @@ class MaeFinetuningImageDataset(FairseqDataset):
         path = os.path.join(root, split)
         loader = caching_loader(local_cache_path, datasets.folder.default_loader)
 
-        self.dataset = datasets.ImageFolder(path, loader=loader, transform=transform)
+        self.dataset = ImageNetDataset(data_path=path,
+                                       split=split,
+                                       loader=loader,
+                                       transform=transform)
 
         logger.info(f"loaded {len(self.dataset)} examples")
 
     def __getitem__(self, index):
         img, label = self.dataset[index]
-        return {"id": index, "img": img, "label": label}
+        return {"id": index, "image": img, "target": label}
 
     def __len__(self):
         return len(self.dataset)
@@ -104,17 +108,17 @@ class MaeFinetuningImageDataset(FairseqDataset):
         if len(samples) == 0:
             return {}
 
-        collated_img = torch.stack([s["img"] for s in samples], dim=0)
+        collated_img = torch.stack([s["image"] for s in samples], dim=0)
 
         res = {
             "id": torch.LongTensor([s["id"] for s in samples]),
             "net_input": {
-                "imgs": collated_img,
+                "image": collated_img,
             },
         }
 
-        if "label" in samples[0]:
-            res["net_input"]["labels"] = torch.LongTensor([s["label"] for s in samples])
+        if "target" in samples[0]:
+            res["net_input"]["target"] = torch.LongTensor([s["target"] for s in samples])
 
         return res
 
@@ -133,3 +137,51 @@ class MaeFinetuningImageDataset(FairseqDataset):
             order = [np.arange(len(self))]
 
         return order[0]
+
+
+class ImageNetDataset:
+    def __init__(
+            self,
+            data_path:str,
+            split,
+            transform:torch.nn.Module,
+            loader):
+        self.data_path = data_path
+        self.split = split
+        self.path_to_data = os.path.join(self.data_path, 'imagenet')
+        if not os.path.exists(self.path_to_data):
+            raise FileNotFoundError(f"Directory {self.path_to_data} does not exists, "
+                                    "please create it and add the correponding files from HuggingFace: "
+                                    f"https://huggingface.co/datasets/imagenet-1k")
+        
+        self.path_to_split = os.path.join(self.path_to_data, self.split)
+        os.makedirs(self.path_to_split, exist_ok=True)
+
+        self.classes = {synset: i for i, synset in enumerate(IMAGENET2012_CLASSES.keys())}
+
+        self.transform = transform
+        self.loader = loader
+
+    def load(self):
+        items = []
+        with open(os.path.join(self.path_to_data, f'imagenet.{self.split}.jsonl'), 'r', encoding="utf-8") as reader:
+            for line in reader:
+                data = json.loads(line)
+                items.append(data)
+            self.log(f"Loaded {len(items)} {self.split} examples.")
+        self.items = items
+
+    def __len__(self):
+        return len(self.items)
+
+    def _get_image(self, image_path: str):
+        image = self.loader(image_path)
+        return self.transform(image)
+
+    def __getitem__(self, index):
+        item = self.items[index]
+        image = self._get_image(image_path=item['image_path'])
+        return image, item['target']
+    
+    def __len__(self):
+        return len(self.items)
