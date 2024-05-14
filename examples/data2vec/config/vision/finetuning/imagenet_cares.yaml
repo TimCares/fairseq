@@ -61,5 +61,6 @@ model:
   _name: mm_data2vec_image_classification
   mixup: 0.7
   mixup_prob: 0.9
+  drop_path_rate: 0.0 # the model is significantly smaller than the default d2v model, so do not use drop path, instead of drop_path_rate: 0.1
 
   model_path: ???
