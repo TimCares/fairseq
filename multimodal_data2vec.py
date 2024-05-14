@@ -1,33 +1,60 @@
-import torch.nn as nn
 import torch
-import numpy as np
-from functools import partial
-import logging
-from typing import *
+from torch import nn
 import torch.nn.functional as F
+from functools import partial
+from typing import Dict, Any, Optional, List, Union, Tuple
+import numpy as np
 import os
-import contextlib
-import pytorch_lightning as L
-
-from examples.data2vec.data.modality import Modality
-from examples.data2vec.models.modalities.modules import AltBlock
-from fairseq.modules.transformer_sentence_encoder import init_bert_params
-
-from transformers.optimization import get_cosine_schedule_with_warmup, get_constant_schedule_with_warmup
-
-from collections import namedtuple
 import logging
-from omegaconf import OmegaConf
-from omegaconf.dictconfig import DictConfig
-from collections import OrderedDict
-from typing import List, Tuple, Dict
+import pytorch_lightning as L
+from dataclasses import dataclass, field
+from data2vec_fairseq.data.modality import Modality
+from data2vec_fairseq.models.modalities.base import ModalitySpecificEncoder
+from data2vec_fairseq.models.data2vec2 import Data2VecMultiModel, Data2VecMultiConfig
+from transformers.optimization import get_cosine_schedule_with_warmup, get_constant_schedule_with_warmup
+import contextlib
 
-from examples.data2vec.models.data2vec2 import Data2VecMultiModel
-from examples.data2vec.models.data2vec2 import Data2VecMultiConfig
+from fairseq.modules.transformer_sentence_encoder import init_bert_params
+from data2vec_fairseq.models.modalities.modules import AltBlock
+
+from omegaconf import OmegaConf, DictConfig
+from collections import namedtuple
 from fairseq.data import Dictionary
 from fairseq.dataclass.utils import merge_with_parent
 
 logger = logging.getLogger(__name__)
+
+def load_model(pretrained_model_cfg:DictConfig,
+               model_state_dict) -> Data2VecMultiModel:
+    
+    pretrained_model_cfg = merge_with_parent(Data2VecMultiConfig(), pretrained_model_cfg, remove_missing=True)
+
+    logger.info(f"Modality used: {pretrained_model_cfg.supported_modality}")
+    if pretrained_model_cfg.supported_modality.name.lower() == 'text':
+        Task = namedtuple('Task', 'source_dictionary')
+
+        dictionary = Dictionary.load(os.path.join('..', 'data', "dict.txt"))
+        dictionary.add_symbol("<mask>")
+        dummy_task = Task(source_dictionary=dictionary)
+    else:
+        dummy_task = False
+
+    model = Data2VecMultiModel.build_model(pretrained_model_cfg, task=dummy_task)
+
+    result = model.load_state_dict(model_state_dict)
+    logger.info(f'Loaded state dict, result: {result}')
+    return model
+
+
+def load_pretrained_d2v_model(state_dict_path:str, keep_decoder:bool=False) -> Data2VecMultiModel:
+    model_meta_data = torch.load('/Users/timcares/CompSci/Uni/Projects/MasterThesis/models/base_imagenet.pt')
+    pretrained_model_cfg = OmegaConf.create(model_meta_data['cfg']['model'])
+    model = load_model(pretrained_model_cfg=pretrained_model_cfg, model_state_dict=model_meta_data['model'])
+
+    # removes decoder, and all encoders with modality != supported modality
+    model.remove_pretraining_modules(modality=pretrained_model_cfg.supported_modality, keep_decoder=keep_decoder)
+
+    return model
 
 def prepare_output(out:List[torch.Tensor], modality:Modality, norm:bool=True) -> List[torch.Tensor]:
     if norm:
@@ -50,7 +77,7 @@ def get_max_saliency_patches(
         frac_keep_tokens:float,
         attn_results:List[torch.Tensor],
         extractor_out:Dict[str, torch.Tensor],
-        feature_extractor,
+        feature_extractor:ModalitySpecificEncoder,
         ) -> Tuple[torch.Tensor, torch.Tensor]:
         
     alibi_scale = extractor_out.get("alibi_scale", None)
@@ -130,39 +157,6 @@ def prepare_salient_patches(
     layer_results = prepare_output(out=layer_results, modality=mode, norm=not norm_first)
     # B x num_keep+1 x D -> one (+1) stems from additional special token
     return layer_results
-
-
-def load_model(pretrained_model_cfg:DictConfig,
-               model_state_dict) -> Data2VecMultiModel:
-    
-    pretrained_model_cfg = merge_with_parent(Data2VecMultiConfig(), pretrained_model_cfg, remove_missing=True)
-
-    logger.info(f"Modality used: {pretrained_model_cfg.supported_modality}")
-    if pretrained_model_cfg.supported_modality.name.lower() == 'text':
-        Task = namedtuple('Task', 'source_dictionary')
-
-        dictionary = Dictionary.load(os.path.join('..', 'data', "dict.txt"))
-        dictionary.add_symbol("<mask>")
-        dummy_task = Task(source_dictionary=dictionary)
-    else:
-        dummy_task = False
-
-    model = Data2VecMultiModel.build_model(pretrained_model_cfg, task=dummy_task)
-
-    result = model.load_state_dict(model_state_dict)
-    logger.info(f'Loaded state dict, result: {result}')
-    return model
-
-
-def load_pretrained_d2v_model(state_dict_path:str, keep_decoder:bool=False) -> Data2VecMultiModel:
-    model_meta_data = torch.load(state_dict_path)
-    pretrained_model_cfg = OmegaConf.create(model_meta_data['cfg']['model'])
-    model = load_model(pretrained_model_cfg=pretrained_model_cfg, model_state_dict=model_meta_data['model'])
-
-    # removes decoder, and all encoders with modality != supported modality
-    model.remove_pretraining_modules(modality=pretrained_model_cfg.supported_modality, keep_decoder=keep_decoder)
-
-    return model
 
 
 class KDData2VecPreTrainingLightningModule(L.LightningModule):
@@ -316,9 +310,66 @@ class KDData2VecPreTrainingLightningModule(L.LightningModule):
         else:
             return optimizer
 
+
+@dataclass
+class PretrainedStateDictsConfig():
+    audio:str = 'base_libri.pt'
+    image:str = 'base_imagenet.pt'
+    text:str = 'nlp_base.pt'
+
+@dataclass
+class BlockInitConfig():
+    init_from: Optional[Modality] = None # if None, then no blocks are initialized
+    init_type: Optional[str] = None # 'attention' or 'block', only relevant if "init_from" not None
+    block_indices: Optional[List[int]] = None # if None, then all blocks are initialized
+    freeze_blocks: Optional[List[int]] = None # if None, then all blocks are frozen, if empty list, then no blocks are frozen
+
+@dataclass
+class KDMMData2VecConfig():
+    pretrained_path:str = '../models'
+    pretrained: PretrainedStateDictsConfig = field(default_factory=PretrainedStateDictsConfig)
+
+    supported_modalities: List[Modality] = field(default_factory=lambda: [Modality.AUDIO, Modality.IMAGE, Modality.TEXT])
+
+    block_init_cfg: BlockInitConfig = field(default_factory=BlockInitConfig)
+
+    mask: bool = False
+    d2v_masking: bool = False
+
+    # MaskedKD, relevant if "mask" is True and "d2v_masking" is False
+
+    # if True, then the student gets the masked input, and the saliency score is computed from the teacher output
+    inverse_masked_kd: bool = False
+    frac_keep_tokens: float = 0.6
+    # whether to normalize all timesteps (True), or only the ones that are kept (False)
+    norm_first: bool = False
+    # whether to use the final attention layer saliency score for masking (True) or the average of all layers (False)
+    final_attn_layer_saliency_score: bool = False
+
+    embed_dim: int = 768
+
+    clone_batch: int = 1
+
+    depth: int = 8
+    num_heads: int = 12
+    mlp_ratio: float = 4
+    encoder_dropout: float = 0.1
+    attention_dropout: float = 0.1
+    activation_dropout: float = 0.0
+    post_mlp_drop: float = 0.1
+    norm_eps: float = 1e-6
+    norm_affine: bool = True
+    layer_norm_first: bool = False
+    dropout_input: float = 0.0
+    start_drop_path_rate: float = 0
+    end_drop_path_rate: float = 0
+    layerdrop: float = 0.0
+
+    seed: int = 42
+
 class KDMMData2Vec(nn.Module):
     def __init__(self,
-                 cfg,
+                 cfg: KDMMData2VecConfig,
                  ):
         super(KDMMData2Vec, self).__init__()
         self.cfg = cfg
@@ -437,7 +488,7 @@ class KDMMData2Vec(nn.Module):
             else:
                 raise ValueError("Audio, image or text must be provided, found all to be None.")
 
-            feature_extractor = self.modality_encoders[mode]
+            feature_extractor:ModalitySpecificEncoder = self.modality_encoders[mode]
             with torch.no_grad() if not self.fine_tuning else contextlib.ExitStack():
                 x_local = feature_extractor.local_features(source) # if we do d2v masking, we reuse the local features
                 extractor_out_unmasked = feature_extractor.contextualized_features(
@@ -513,6 +564,24 @@ class KDMMData2Vec(nn.Module):
                 
                 if not features_only:
                     layer_results.append(lr)
+
+        if masked_kd:
+            assert not d2v_masking, "MaskedKD and d2v masking are mutually exclusive."
+            x_unmasked_tokens_only, keep_timesteps = get_max_saliency_patches(
+                frac_keep_tokens=self.cfg.frac_keep_tokens,
+                attn_results=attn_results,
+                extractor_out=extractor_out, # in this case must be "extractor_out_unmasked" (d2v_masking=False)
+                feature_extractor=feature_extractor,
+            )
+            
+            extractor_out_unmasked['x'] = x_unmasked_tokens_only
+
+            layer_results = prepare_salient_patches(
+                layer_results=layer_results,
+                keep_timesteps=keep_timesteps,
+                mode=modes[0],
+                norm_first=self.cfg.norm_first,
+            )
 
         if self.norm is not None:
             x = self.norm(x)
@@ -642,8 +711,8 @@ class KDMMData2Vec(nn.Module):
                                     padding_mask=padding_mask,
                                     normalize=normalize)
 
-    def _init_blocks(self, d2v_model) -> None:
-        init_cfg = self.cfg.block_init_cfg
+    def _init_blocks(self, d2v_model:Data2VecMultiModel) -> None:
+        init_cfg:BlockInitConfig = self.cfg.block_init_cfg
         
         if init_cfg.block_indices is None:
             take_block_indices = [i for i in range(self.cfg.depth)]
@@ -728,9 +797,12 @@ class KDMMData2Vec(nn.Module):
         Useful when fine-tuning the model on downstream task
         involving only a subset of the supported modalities.
         """
+        # comparison done on name basis, as on "enum" basis yields problems after serialization
+        keep_modes = [mode.name.lower() for mode in keep_modes]
         for modality in self.supported_modalities:
-            if modality not in keep_modes:
-                del self.modality_encoders[modality.name.lower()] # includes removing the decoder
+            modality_str = modality.name.lower()
+            if modality_str not in keep_modes:
+                del self.modality_encoders[modality_str] # includes removing the decoder
             else:
-                if hasattr(self.modality_encoders[modality.name.lower()], 'decoder'):
-                    del self.modality_encoders[modality.name.lower()].decoder # not needed in any case
+                if hasattr(self.modality_encoders[modality_str], 'decoder'):
+                    del self.modality_encoders[modality_str].decoder # not needed in any case

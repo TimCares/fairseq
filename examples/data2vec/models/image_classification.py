@@ -18,7 +18,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from examples.data2vec.data.modality import Modality
-from examples.data2vec.models.mm_d2v import KDMMData2Vec, KDData2VecPreTrainingLightningModule
+from multimodal_data2vec import KDMMData2Vec, KDData2VecPreTrainingLightningModule
 from examples.data2vec.models.mae_image_classification import PredictionMode
 
 from fairseq.dataclass import FairseqDataclass
@@ -204,9 +204,9 @@ class ImageClassificationModel(BaseFairseqModel):
 
         if self.linear_classifier:
             with torch.no_grad():
-                x = self.model(image)
+                x = self.model_forward(image)
         else:
-            x = self.model(image)
+            x = self.model_forward(image)
 
         if self.cfg.prediction_mode == PredictionMode.MEAN_POOLING:
             x = x.mean(dim=1)
@@ -253,3 +253,12 @@ class ImageClassificationModel(BaseFairseqModel):
                 result["correct"] = correct
 
         return result
+
+    def model_forward(self, imgs):
+        return self.model.extract_features(
+            image=imgs,
+            modes=[Modality.IMAGE],
+            remove_extra_tokens=(
+                self.cfg.prediction_mode != PredictionMode.CLS_TOKEN
+            ),
+        )["x"]
